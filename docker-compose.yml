@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15
+    container_name: aiproctoring-postgres
+    environment:
+      POSTGRES_DB: aiproctoring
+      POSTGRES_USER: aiproctoring
+      POSTGRES_PASSWORD: aiproctoring123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - aiproctoring-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: aiproctoring-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - aiproctoring-network
+
+  # Backend Services
+  auth-service:
+    build:
+      context: .
+      dockerfile: src/Services/Authentication/Dockerfile
+    container_name: aiproctoring-auth
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=aiproctoring_auth;Username=aiproctoring;Password=aiproctoring123
+      - Jwt__Key=ThisIsAVerySecureKeyThatShouldBeAtLeast32CharactersLongForProduction!
+      - Jwt__Issuer=AIProctoring.Authentication
+      - Jwt__Audience=AIProctoring.Client
+    ports:
+      - "7001:8080"
+    depends_on:
+      - postgres
+    networks:
+      - aiproctoring-network
+
+  proctoring-service:
+    build:
+      context: .
+      dockerfile: src/Services/Proctoring/Dockerfile
+    container_name: aiproctoring-proctoring
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=aiproctoring_proctoring;Username=aiproctoring;Password=aiproctoring123
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "7002:8080"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - aiproctoring-network
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: src/Services/Analytics/Dockerfile
+    container_name: aiproctoring-analytics
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - ConnectionStrings__DefaultConnection=Host=postgres;Database=aiproctoring_analytics;Username=aiproctoring;Password=aiproctoring123
+      - TimescaleDB__ConnectionString=Host=postgres;Database=aiproctoring_timeseries;Username=aiproctoring;Password=aiproctoring123
+    ports:
+      - "7003:8080"
+    depends_on:
+      - postgres
+    networks:
+      - aiproctoring-network
+
+  notifications-service:
+    build:
+      context: .
+      dockerfile: src/Services/Notifications/Dockerfile
+    container_name: aiproctoring-notifications
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Redis__ConnectionString=redis:6379
+    ports:
+      - "7004:8080"
+    depends_on:
+      - redis
+    networks:
+      - aiproctoring-network
+
+  # AI Services
+  ai-service:
+    build:
+      context: .
+      dockerfile: src/Services/AI/Dockerfile
+    container_name: aiproctoring-ai
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    networks:
+      - aiproctoring-network
+    volumes:
+      - ./src/Services/AI/models:/app/models
+
+  # API Gateway (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: aiproctoring-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - auth-service
+      - proctoring-service
+      - analytics-service
+      - notifications-service
+    networks:
+      - aiproctoring-network
+
+volumes:
+  postgres_data:
+
+networks:
+  aiproctoring-network:
+    driver: bridge
